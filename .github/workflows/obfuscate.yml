@@ -67,7 +67,7 @@ jobs:
               renameProperties: false,
               renamePropertiesMode: 'safe',
               ignoreImports: false,
-              target: 'browser',
+              target: 'worker',
               numbersToExpressions: false,
               simplify: false,
               splitStrings: true,
