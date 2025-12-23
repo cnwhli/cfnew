@@ -47,11 +47,11 @@ jobs:
             process.exit(1);
           }
 
-          // 关键修复1：预处理代码，自动替换所有 window 为 self（Worker 全局对象）
+          // 修复1：预处理代码，自动替换所有 window 为 self（Worker 全局对象）
           let processedCode = originalCode
-            .replace(/window\./g, 'self.')       // 替换 window.xxx → self.xxx
-            .replace(/\bwindow\b/g, 'self')      // 替换独立的 window → self
-            .replace(/globalThis\.window/g, 'self'); // 修复嵌套引用
+            .replace(/window\./g, 'self.')       
+            .replace(/\bwindow\b/g, 'self')      
+            .replace(/globalThis\.window/g, 'self');
 
           const obfuscationOptions = {
               compact: true,
@@ -66,14 +66,14 @@ jobs:
               stringArrayWrappersCount: 2,
               stringArrayWrappersChainedCalls: false,
               stringArrayWrappersParametersMaxCount: 3,
-              renameGlobals: false, // 关键修复2：禁用全局变量重命名（避免 self/globalThis 被篡改）
+              renameGlobals: false, // 修复2：禁用全局变量重命名（避免篡改 Worker 核心对象）
               identifierNamesGenerator: 'mangled-shuffled',
               identifierNamesCache: null,
-              identifiersPrefix: 'cf_', // 关键修复3：加前缀，避免与 Worker 内置变量冲突
+              identifiersPrefix: 'cf_', // 修复3：加前缀避免与内置变量冲突
               renameProperties: false,
               renamePropertiesMode: 'safe',
               ignoreImports: false,
-              target: 'webworker', // 关键修复4：改为 Worker 专用环境（替代 browser）
+              target: 'service-worker', // 修复4：关键！正确的 Worker 目标值（非 webworker）
               numbersToExpressions: false,
               simplify: false,
               splitStrings: true,
@@ -85,17 +85,22 @@ jobs:
               debugProtectionInterval: 0,
               disableConsoleOutput: true,
               domainLock: [],
-              // 关键修复5：保留 Worker 核心全局对象，禁止混淆
+              // 修复5：保留 Worker 核心全局对象，禁止混淆
               reservedNames: [
                 'self', 'globalThis', 'fetch', 'Request', 'Response',
                 'Headers', 'URL', 'crypto', 'caches', 'env', 'addEventListener'
               ]
           };
 
-          const obfuscatedCode = JavaScriptObfuscator.obfuscate(processedCode, obfuscationOptions).getObfuscatedCode();
-          
-          fs.writeFileSync(path.join(process.cwd(), outputFileName), obfuscatedCode, 'utf8');
-          console.log('成功将 \'' + sourceFileName + '\' 混淆并保存至 \'' + outputFileName + '\'。');
+          // 执行混淆并捕获错误
+          try {
+            const obfuscatedCode = JavaScriptObfuscator.obfuscate(processedCode, obfuscationOptions).getObfuscatedCode();
+            fs.writeFileSync(path.join(process.cwd(), outputFileName), obfuscatedCode, 'utf8');
+            console.log('成功将 \'' + sourceFileName + '\' 混淆并保存至 \'' + outputFileName + '\'。');
+          } catch (e) {
+            console.error('混淆过程出错：', e.message);
+            process.exit(1);
+          }
           EOF
           node obfuscate.js
 
