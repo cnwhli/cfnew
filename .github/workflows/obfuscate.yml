@@ -3,15 +3,12 @@ name: Generate and Obfuscate Worker Script
 on:
   workflow_dispatch:
   push:
-    branches:
-      - '**'
-    paths:
-      - '明文源吗'
+    branches: ['**']
+    paths: ['明文源吗']
 
 jobs:
   build-and-obfuscate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,82 +32,106 @@ jobs:
           const outputFileName = '_worker.js';
           const sourceFilePath = path.join(process.cwd(), sourceFileName);
 
+          // 1. 检查源文件
           if (!fs.existsSync(sourceFilePath)) {
-            console.error('错误：在路径 \'' + sourceFilePath + '\' 未找到源文件。请确保您的仓库根目录有名为 \'明文源吗\' 的文件。');
+            console.error('❌ 未找到源文件：', sourceFilePath);
+            process.exit(1);
+          }
+          const originalCode = fs.readFileSync(sourceFilePath, 'utf8').trim();
+          if (!originalCode) {
+            console.error('❌ 源文件为空');
             process.exit(1);
           }
 
-          const originalCode = fs.readFileSync(sourceFilePath, 'utf8');
-
-          if (!originalCode || originalCode.trim().length === 0) {
-            console.error('错误：源文件 ' + sourceFileName + ' 为空。');
-            process.exit(1);
-          }
-
-          // 修复1：预处理代码，自动替换所有 window 为 self（Worker 全局对象）
+          // 2. 超强预处理：覆盖所有 window 引用场景（核心修复）
           let processedCode = originalCode
-            .replace(/window\./g, 'self.')       
-            .replace(/\bwindow\b/g, 'self')      
-            .replace(/globalThis\.window/g, 'self');
+            // 覆盖：window.xxx → self.xxx
+            .replace(/window\./g, 'self.')
+            // 覆盖：window['xxx'] → self['xxx']
+            .replace(/window\[(['"])/g, 'self[$1')
+            // 覆盖：window["xxx"] → self["xxx"]
+            .replace(/window\[(?!['"])/g, 'self[')
+            // 覆盖：独立的 window（如 let a = window;）
+            .replace(/\bwindow\b(?!\.)/g, 'self')
+            // 覆盖：globalThis.window → self
+            .replace(/globalThis\.window/g, 'self')
+            // 覆盖：嵌套的 window（如 a.b.window → a.b.self）
+            .replace(/(\w+)\.window/g, '$1.self')
+            // 覆盖：Unicode 转义的 window（如 \u0077\u0069\u006E\u0064\u006F\u0077）
+            .replace(/\\u0077\\u0069\\u006E\\u0064\\u006F\\u0077/g, 'self')
+            // 覆盖：拆分字符串的 window（如 'win'+'dow'）
+            .replace(/'win'\+'dow'/g, 'self')
+            .replace(/"win"\+"dow"/g, 'self');
 
+          // 3. 调试：输出预处理后的代码片段（查看 window 是否被替换）
+          console.log('🔍 预处理后代码片段（前500字符）：');
+          console.log(processedCode.substring(0, 500));
+          if (processedCode.includes('window')) {
+            console.warn('⚠️ 预处理后仍存在 window 引用，位置：');
+            // 输出所有包含 window 的行
+            processedCode.split('\n').forEach((line, idx) => {
+              if (line.includes('window')) console.log(`行${idx+1}: ${line.trim()}`);
+            });
+          }
+
+          // 4. 简化混淆配置（先保证运行，再逐步增强）
           const obfuscationOptions = {
               compact: true,
               controlFlowFlattening: false,
-              controlFlowFlatteningThreshold: 0,
               deadCodeInjection: false,
-              stringArray: true,
-              stringArrayEncoding: ['base64'],
-              stringArrayThreshold: 1.0,
-              stringArrayRotate: true,
-              stringArrayShuffle: true,
-              stringArrayWrappersCount: 2,
-              stringArrayWrappersChainedCalls: false,
-              stringArrayWrappersParametersMaxCount: 3,
-              renameGlobals: false, // 修复2：禁用全局变量重命名（避免篡改 Worker 核心对象）
-              identifierNamesGenerator: 'mangled-shuffled',
-              identifierNamesCache: null,
-              identifiersPrefix: 'cf_', // 修复3：加前缀避免与内置变量冲突
+              stringArray: false, // 临时关闭：避免编码后生成 window
+              stringArrayEncoding: [],
+              stringArrayThreshold: 0,
+              stringArrayRotate: false,
+              stringArrayShuffle: false,
+              stringArrayWrappersCount: 0,
+              renameGlobals: false,
+              identifierNamesGenerator: 'mangled',
+              identifiersPrefix: 'cf_',
               renameProperties: false,
-              renamePropertiesMode: 'safe',
-              ignoreImports: false,
-              target: 'service-worker', // 修复4：关键！正确的 Worker 目标值（非 webworker）
+              target: 'service-worker',
               numbersToExpressions: false,
               simplify: false,
-              splitStrings: true,
-              splitStringsChunkLength: 1,
-              transformObjectKeys: false,
-              unicodeEscapeSequence: true,
-              selfDefending: false,
-              debugProtection: false,
-              debugProtectionInterval: 0,
+              splitStrings: false, // 临时关闭：避免拆分字符串生成 window
+              unicodeEscapeSequence: false, // 临时关闭：避免转义后隐藏 window
               disableConsoleOutput: true,
-              domainLock: [],
-              // 修复5：保留 Worker 核心全局对象，禁止混淆
-              reservedNames: [
-                'self', 'globalThis', 'fetch', 'Request', 'Response',
-                'Headers', 'URL', 'crypto', 'caches', 'env', 'addEventListener'
-              ]
+              reservedNames: ['self', 'globalThis', 'fetch', 'env']
           };
 
-          // 执行混淆并捕获错误
+          // 5. 执行混淆
+          let obfuscatedCode;
           try {
-            const obfuscatedCode = JavaScriptObfuscator.obfuscate(processedCode, obfuscationOptions).getObfuscatedCode();
-            fs.writeFileSync(path.join(process.cwd(), outputFileName), obfuscatedCode, 'utf8');
-            console.log('成功将 \'' + sourceFileName + '\' 混淆并保存至 \'' + outputFileName + '\'。');
+            obfuscatedCode = JavaScriptObfuscator.obfuscate(processedCode, obfuscationOptions).getObfuscatedCode();
           } catch (e) {
-            console.error('混淆过程出错：', e.message);
+            console.error('❌ 混淆失败：', e.message);
             process.exit(1);
           }
+
+          // 6. 强制检查：混淆后代码禁止包含 window
+          if (obfuscatedCode.includes('window')) {
+            console.error('❌ 混淆后代码仍存在 window 引用！');
+            // 输出混淆后包含 window 的位置（方便定位）
+            const windowPos = obfuscatedCode.indexOf('window');
+            console.log('window 出现在位置', windowPos, '附近代码：');
+            console.log(obfuscatedCode.substring(windowPos - 50, windowPos + 50));
+            process.exit(1);
+          }
+
+          // 7. 写入文件
+          fs.writeFileSync(outputFileName, obfuscatedCode, 'utf8');
+          console.log('✅ 混淆完成，文件：', outputFileName);
           EOF
+          
+          # 执行混淆脚本
           node obfuscate.js
 
-      - name: Commit and push the obfuscated file
+      - name: Commit and push
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add '_worker.js'
           if git diff --staged --quiet; then
-            echo "No changes to commit, the obfuscated file is already up-to-date."
+            echo "ℹ️ 无变更，无需提交"
           else
             git commit -m "部署用这个"
             git push
